@@ -23,6 +23,15 @@ function arrayBufferToBase64(buffer) {
   return btoa(String.fromCharCode(...bytes));
 }
 
+function base64ToArrayBuffer(base64) {
+  const binaryString = atob(base64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
 function showErrorToast(message) {
   const toast = document.createElement('div');
   toast.className = 'toast';
@@ -35,6 +44,7 @@ function showErrorToast(message) {
   }, 3000);
 }
 
+//Cifrado simétrico
 async function encryptUsername(username) {
   try {
     const key = await crypto.subtle.generateKey(
@@ -53,6 +63,7 @@ async function encryptUsername(username) {
     return {
       data: arrayBufferToBase64(encrypted),
       iv: arrayBufferToBase64(iv),
+      key: key,
       algorithm: 'AES-GCM-256'
     };
   } catch (error) {
@@ -60,6 +71,27 @@ async function encryptUsername(username) {
   }
 }
 
+//Descifrado simétrico
+async function decryptUsername(encryptedData, keyBase64, ivBase64) {
+  try {
+    const key = encryptedData.key; // Usar la clave del objeto cifrado
+    const iv = base64ToArrayBuffer(ivBase64);
+    const encrypted = base64ToArrayBuffer(encryptedData.data);
+    
+    const decrypted = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: iv },
+      key,
+      encrypted
+    );
+    
+    const decoder = new TextDecoder();
+    return decoder.decode(decrypted);
+  } catch (error) {
+    throw new Error('Error en descifrado simétrico: ' + error.message);
+  }
+}
+
+//Cifrado asimétrico
 async function encryptPassword(password) {
   try {
     const rsaKeyPair = await crypto.subtle.generateKey(
@@ -81,10 +113,28 @@ async function encryptPassword(password) {
     );
     return {
       data: arrayBufferToBase64(encrypted),
+      privateKey: rsaKeyPair.privateKey,
       algorithm: 'RSA-OAEP-2048'
     };
   } catch (error) {
     throw new Error('Error en cifrado asimétrico: ' + error.message);
+  }
+}
+
+//Descifrado asimétrico
+async function decryptPassword(encryptedData) {
+  try {
+    const encrypted = base64ToArrayBuffer(encryptedData.data);
+    const decrypted = await crypto.subtle.decrypt(
+      { name: "RSA-OAEP", hash: { name: "SHA-256" } },
+      encryptedData.privateKey,
+      encrypted
+    );
+    
+    const decoder = new TextDecoder();
+    return decoder.decode(decrypted);
+  } catch (error) {
+    throw new Error('Error en descifrado asimétrico: ' + error.message);
   }
 }
 
@@ -126,6 +176,14 @@ async function submitForm(event) {
     await new Promise(resolve => setTimeout(resolve, 1000));
     const userEncrypted = await encryptUsername(username);
     const passEncrypted = await encryptPassword(password);
+    
+    // Guardar los datos para descifrado posterior
+    window.encryptedData = {
+      user: userEncrypted,
+      pass: passEncrypted,
+      originalUsername: username,
+      originalPassword: password
+    };
     
     // Mover formulario a la izquierda y mostrar resultados
     mainContainer.classList.add('has-results');
@@ -173,9 +231,69 @@ async function submitForm(event) {
   }
 }
 
+async function decryptData() {
+  if (!window.encryptedData) {
+    showErrorToast('No hay datos cifrados para descifrar');
+    return;
+  }
+  
+  const decryptButton = document.getElementById('decryptButton');
+  const decryptedResults = document.getElementById('decryptedResults');
+  
+  try {
+    decryptButton.disabled = true;
+    decryptButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Descifrando...';
+    
+    // Descifrar usuario (simétrico)
+    const decryptedUsername = await decryptUsername(
+      window.encryptedData.user,
+      null, // No necesitamos keyBase64 porque usamos la clave del objeto
+      window.encryptedData.user.iv
+    );
+    
+    // Descifrar contraseña (asimétrico)
+    const decryptedPassword = await decryptPassword(window.encryptedData.pass);
+    
+    // Mostrar resultados descifrados
+    decryptedResults.style.display = 'block';
+    
+    setTimeout(() => {
+      typewriterEffect(
+        document.getElementById("decryptedUser"), 
+        decryptedUsername,
+        30
+      );
+    }, 200);
+    
+    setTimeout(() => {
+      typewriterEffect(
+        document.getElementById("decryptedPass"), 
+        decryptedPassword,
+        30
+      );
+    }, 600);
+    
+    console.log('🔓 Descifrado completado:', {
+      usuarioDescifrado: decryptedUsername,
+      contraseñaDescifrada: decryptedPassword,
+      coincideUsuario: decryptedUsername === window.encryptedData.originalUsername,
+      coincideContraseña: decryptedPassword === window.encryptedData.originalPassword,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error("Error de descifrado:", error);
+    showErrorToast(error.message || "Error al descifrar los datos");
+  } finally {
+    decryptButton.disabled = false;
+    decryptButton.innerHTML = '<i class="fas fa-unlock"></i> Descifrar Datos';
+  }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
   createFloatingParticles();
   document.getElementById("loginForm").addEventListener("submit", submitForm);
+  document.getElementById("decryptButton").addEventListener("click", decryptData);
   
   const inputs = document.querySelectorAll('input');
   const mainContainer = document.querySelector('.main-container');
@@ -195,6 +313,8 @@ document.addEventListener('DOMContentLoaded', function() {
       if (resultDiv.classList.contains('show')) {
         resultDiv.classList.remove('show');
         mainContainer.classList.remove('has-results');
+        // Ocultar también los resultados descifrados
+        document.getElementById('decryptedResults').style.display = 'none';
       }
     });
   });
